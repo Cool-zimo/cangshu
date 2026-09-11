@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>仓鼠 · GitHub 仓库管理面板</title>
+    <link rel="icon"
+        href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🐹</text></svg>">
+    <link rel="stylesheet" href="css/style.css">
+</head>
+
+<body>
+    <!-- ============ 登录页 ============ -->
+    <div id="login-screen" class="login-screen">
+        <div class="login-card">
+            <div class="login-logo">🐹</div>
+            <h1>仓鼠</h1>
+            <p class="login-subtitle">囤好你的每一个 GitHub 仓库</p>
+
+            <div class="login-form">
+                <label for="token-input">GitHub Personal Access Token</label>
+                <input type="password" id="token-input" placeholder="ghp_xxxxxxxxxxxxxxxxxxxx" autocomplete="off">
+                <p class="token-hint">需要 <code>repo</code> 权限（管理仓库、读写文件）</p>
+                <button id="login-btn" type="button">进 入 仓 鼠</button>
+                <p id="login-error" class="login-error"></p>
+
+                <div id="saved-box" class="saved-box" style="display:none">
+                    <div class="saved-title">已保存的账号</div>
+                    <div id="saved-list"></div>
+                </div>
+
+                <a href="https://github.com/settings/tokens/new?scopes=repo&description=cangshu" target="_blank"
+                    class="token-link">没有令牌？点这里创建 →</a>
+            </div>
+
+            <div class="login-foot">
+                <span>令牌只保存在你自己的浏览器里，不会上传到任何服务器</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- ============ 主界面 ============ -->
+    <div id="main-screen" class="main-screen hidden">
+        <header class="topbar">
+            <div class="brand">
+                <span class="brand-logo">🐹</span>
+                <span class="brand-name">仓鼠</span>
+            </div>
+
+            <div class="search-box">
+                <input id="search-input" placeholder="搜索仓库…" autocomplete="off">
+            </div>
+
+            <div class="topbar-acts">
+                <button id="refresh-btn" title="刷新">🔄 刷新</button>
+                <button id="new-repo-btn" class="primary">➕ 新建仓库</button>
+                <button id="add-repo-btn">📥 添加</button>
+                <button id="config-btn" title="配置">⚙️</button>
+                <div class="user">
+                    <img id="user-avatar" alt="">
+                    <span id="user-login"></span>
+                </div>
+                <button id="logout-btn" title="退出">⎋</button>
+            </div>
+        </header>
+
+        <div id="stat-bar" class="stat-bar"></div>
+
+        <main class="content">
+            <div id="repo-grid" class="grid"></div>
+
+            <div id="empty-state" class="empty">
+                <div class="empty-logo">🐹</div>
+                <h2>还没有管理任何仓库</h2>
+                <p>新建仓库，或把你已有的仓库添加进来</p>
+                <div class="empty-acts">
+                    <button id="empty-new" class="primary">➕ 新建仓库</button>
+                    <button id="empty-add">📥 添加已有仓库</button>
+                </div>
+            </div>
+
+            <!-- 文件浏览 -->
+            <section id="file-panel" class="file-panel hidden">
+                <div class="file-head">
+                    <button id="file-back">← 返回</button>
+                    <h3 id="file-title"></h3>
+                    <button id="file-open-vscode" class="primary">💠 在 VS Code 打开</button>
+                </div>
+                <div id="file-crumb" class="file-crumb"></div>
+                <div id="file-list" class="file-list"></div>
+                <p class="file-tip">右键文件 → 「在 VS Code 中打开」，可直接在浏览器里编辑</p>
+            </section>
+        </main>
+    </div>
+
+    <!-- ============ 通用对话框 ============ -->
+    <div id="dialog" class="dialog hidden">
+        <div class="dialog-mask" onclick="document.getElementById('dialog').classList.add('hidden')"></div>
+        <div class="dialog-box">
+            <button class="dialog-x"
+                onclick="document.getElementById('dialog').classList.add('hidden')">×</button>
+            <div id="dialog-body"></div>
+        </div>
+    </div>
+
+    <div id="toast" class="toast"></div>
+
+    <script type="module">
+        import { App } from './js/app.js';
+        const app = new App();
+        app.init();
+        // 空状态的两个按钮（init 里没绑，因为它们在 grid 之外）
+        document.getElementById('empty-new')?.addEventListener('click', () => app.showNewRepo());
+        document.getElementById('empty-add')?.addEventListener('click', () => app.showAddRepo());
+        window.__app = app;   // 供控制台调试
+    </script>
+</body>
+
+</html>
