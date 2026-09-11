@@ -13,8 +13,8 @@ if (typeof btoa === 'undefined') {
     global.atob = s => Buffer.from(s, 'base64').toString('binary');
 }
 
-const { GitHubAPI, encodeBase64Utf8, decodeBase64Utf8 } = await import('./cangshu/js/api.js');
-const { ConfigStore, blankConfig, CONFIG_FILE, DEFAULT_CONFIG_REPO } = await import('./cangshu/js/config.js');
+const { GitHubAPI, encodeBase64Utf8, decodeBase64Utf8 } = await import('./js/api.js');
+const { ConfigStore, blankConfig, CONFIG_FILE, DEFAULT_CONFIG_REPO } = await import('./js/config.js');
 
 console.log('═══════ 仓鼠 · 核心逻辑测试 ═══════\n');
 
@@ -206,16 +206,34 @@ console.log('\n【真实 API 冒烟测试】');
         check('列出仓库', repos.ok, repos.message);
         if (repos.ok) console.log(`    可见仓库: ${repos.data.length} 个`);
 
-        const created = await api.createRepo({
+        // GitHub 建仓后有短暂延迟（仓库尚未完全就绪），
+        // 立刻改名/删除会拿到 404。这里做重试等待。
+        const sleep = ms => new Promise(r => setTimeout(r, ms));
+        async function retry(fn, times = 5, gap = 1500) {
+            for (let i = 0; i < times; i++) {
+                const r = await fn();
+                if (r.ok) return r;
+                if (i < times - 1) await sleep(gap);
+            }
+            return fn();
+        }
+
+        // 先清掉上次残留
+        await api.deleteRepo(me.data.login, 'cangshu-smoke-test').catch(() => {});
+        await api.deleteRepo(me.data.login, 'cangshu-smoke-renamed').catch(() => {});
+
+        const created = await retry(() => api.createRepo({
             name: 'cangshu-smoke-test', description: '临时冒烟测试', private: true, autoInit: true
-        });
+        }));
         if (created.ok || (created.status === 422)) {
             check('建仓接口可用', true);
             if (created.ok) {
-                await api.renameRepo(me.data.login, 'cangshu-smoke-test', 'cangshu-smoke-renamed');
-                const after = await api.getRepo(me.data.login, 'cangshu-smoke-renamed');
-                check('改名生效', after.ok && after.data.name === 'cangshu-smoke-renamed');
-                const del = await api.deleteRepo(me.data.login, 'cangshu-smoke-renamed');
+                await sleep(2000);   // 等仓库就绪
+                await retry(() => api.renameRepo(me.data.login, 'cangshu-smoke-test', 'cangshu-smoke-renamed'));
+                const after = await retry(() => api.getRepo(me.data.login, 'cangshu-smoke-renamed'));
+                check('改名生效', after.ok && after.data.name === 'cangshu-smoke-renamed',
+                    after.ok ? after.data.name : after.message);
+                const del = await retry(() => api.deleteRepo(me.data.login, 'cangshu-smoke-renamed'));
                 check('删仓成功', del.ok, del.message);
             }
         } else {
@@ -231,9 +249,16 @@ console.log('\n【真实 API 冒烟测试】');
             cs.add(me.data.login, 'xiudao', { alias: '修仙' });
             const sv = await cs.save();
             check('配置写入成功', sv.ok, sv.message);
+            // GitHub contents API 写入后有短暂读取延迟，重试等待一致性
             const cs2 = new ConfigStore(api, me.data.login);
-            await cs2.load();
-            check('配置读回一致', cs2.has(me.data.login, 'xiudao'), JSON.stringify(cs2.list()));
+            let readBack = false, lastList = [];
+            for (let i = 0; i < 5; i++) {
+                await new Promise(r => setTimeout(r, 1200));
+                await cs2.load();
+                lastList = cs2.list();
+                if (cs2.has(me.data.login, 'xiudao')) { readBack = true; break; }
+            }
+            check('配置读回一致', readBack, JSON.stringify(lastList));
             cs2.remove(me.data.login, 'xiudao');
             await cs2.save();
         }

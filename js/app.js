@@ -11,11 +11,12 @@
  */
 
 import { GitHubAPI } from './api.js';
-import { ConfigStore, DEFAULT_CONFIG_REPO } from './config.js';
+import { ConfigStore, blankConfig, DEFAULT_CONFIG_REPO } from './config.js';
 import { ContextMenu } from './context-menu.js';
 
 const LS_TOKEN = 'cangshu.token';
 const LS_USER = 'cangshu.user';
+const LS_CONFIG_FALLBACK = 'cangshu.config.fallback';
 
 export class App {
     constructor() {
@@ -166,14 +167,58 @@ export class App {
     async bootConfig() {
         const r = await this.config.ensureRepo();
         if (!r.ok) {
-            return this.toast('配置仓库不可用：' + r.message, 'err');
+            // 令牌没有建仓权限（如 fine-grained 只给了只读）时，
+            // 不能让整个应用废掉 —— 降级到浏览器本地存储
+            this.offlineConfig = true;
+            this._loadLocalConfig();
+            this.toast('配置仓库不可用，已改用本地存储：' + r.message, 'err');
+            return;
         }
         const l = await this.config.load();
-        if (!l.ok) this.toast('读取配置失败：' + l.message, 'err');
-        else if (r.created) this.toast(`已创建配置仓库 ${DEFAULT_CONFIG_REPO}（私有）`, 'ok');
+        if (!l.ok) {
+            this.offlineConfig = true;
+            this._loadLocalConfig();
+            this.toast('读取配置失败，已改用本地存储：' + l.message, 'err');
+        } else if (r.created) {
+            this.toast(`已创建配置仓库 ${DEFAULT_CONFIG_REPO}（私有）`, 'ok');
+        }
+    }
+
+    /** 本地兜底：把管理列表存浏览器 */
+    _loadLocalConfig() {
+        try {
+            const raw = localStorage.getItem(LS_CONFIG_FALLBACK);
+            this.config.data = raw ? JSON.parse(raw) : blankConfig();
+        } catch { this.config.data = blankConfig(); }
+    }
+
+    _saveLocalConfig() {
+        try { localStorage.setItem(LS_CONFIG_FALLBACK, JSON.stringify(this.config.data)); } catch {}
     }
 
     // ================= 数据加载 =================
+
+
+    /**
+     * 统一保存配置
+     * 远程可用 → 存配置仓库；不可用 → 落本地存储。
+     * 这样即使令牌没建仓权限，用户添加的仓库也不会丢。
+     */
+    async saveConfig() {
+        if (!this.config) return { ok: false };
+        if (this.offlineConfig) {
+            this._saveLocalConfig();
+            return { ok: true, local: true };
+        }
+        const r = await this.saveConfig();
+        if (!r.ok) {
+            this.offlineConfig = true;
+            this._saveLocalConfig();
+            this.toast('远程配置保存失败，已存本地：' + r.message, 'err');
+            return { ok: true, local: true };
+        }
+        return r;
+    }
 
     async loadAll(silent = false) {
         if (this.state.loading) return;
@@ -428,6 +473,11 @@ export class App {
         const all = this.state.tree;
 
         // 当前层级：直接子项
+        //
+        // 去重必须用「同一把 key」：Git 树里目录本身是一条 tree 记录，
+        // 同时它的子文件又会各自合成出同一个目录名。
+        // 若只对合成目录去重，目录就会被渲染两次（src 出现两行）。
+        // 所以真实目录项和合成目录项都按 name 记进 seen。
         const items = [];
         const seen = new Set();
         for (const n of all) {
@@ -435,15 +485,21 @@ export class App {
             const rest = prefix ? n.path.slice(prefix.length + 1) : n.path;
             if (!rest) continue;
             const seg = rest.split('/');
+
             if (seg.length === 1) {
+                // 该层直接子项：目录(tree) 与文件(blob) 都按名字去重
+                if (seen.has(seg[0])) continue;
+                seen.add(seg[0]);
                 items.push({ name: seg[0], path: n.path, type: n.type, size: n.size, sha: n.sha });
             } else {
-                // 目录：合成一条
-                const d = prefix ? `${prefix}/${seg[0]}` : seg[0];
-                if (!seen.has(d)) {
-                    seen.add(d);
-                    items.push({ name: seg[0], path: d, type: 'tree', size: 0, sha: '' });
-                }
+                // 更深层级：合成一条目录
+                if (seen.has(seg[0])) continue;
+                seen.add(seg[0]);
+                items.push({
+                    name: seg[0],
+                    path: prefix ? `${prefix}/${seg[0]}` : seg[0],
+                    type: 'tree', size: 0, sha: ''
+                });
             }
         }
         items.sort((a, b) => (a.type === b.type ? a.name.localeCompare(b.name) : (a.type === 'tree' ? -1 : 1)));
@@ -486,10 +542,13 @@ export class App {
     fileMenu(e, path, type) {
         const { owner, repo, branch } = this.state.current;
         const isDir = type === 'tree';
+        // 路径必须逐段编码后拼接：直接拼原路径会让空格把 URL 截断
+        // （"src ui.js" → ".../main/src ui.js" 链接直接断掉）
+        const enc = encodePath(path);
         const vsUrl = isDir
             ? `https://vscode.dev/github/${owner}/${repo}`
-            : `https://vscode.dev/github/${owner}/${repo}/blob/${branch}/${path}`;
-        const ghUrl = `https://github.com/${owner}/${repo}/${isDir ? 'tree' : 'blob'}/${branch}/${path}`;
+            : `https://vscode.dev/github/${owner}/${repo}/blob/${branch}/${enc}`;
+        const ghUrl = `https://github.com/${owner}/${repo}/${isDir ? 'tree' : 'blob'}/${branch}/${enc}`;
 
         this.ctx.show(e.clientX, e.clientY, [
             {
@@ -506,7 +565,7 @@ export class App {
             !isDir && {
                 icon: '📥', label: '下载文件',
                 onClick: () => window.open(
-                    `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${path}`, '_blank')
+                    `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${enc}`, '_blank')
             }
         ].filter(Boolean));
     }
@@ -526,7 +585,7 @@ export class App {
                 ${r.content.length > 20000 ? '<p class="muted">（内容过长，仅显示前 20000 字符）</p>' : ''}
             </div>`);
         document.getElementById('prev-vscode')?.addEventListener('click', () => {
-            window.open(`https://vscode.dev/github/${owner}/${repo}/blob/${branch}/${path}`, '_blank');
+            window.open(`https://vscode.dev/github/${owner}/${repo}/blob/${branch}/${encodePath(path)}`, '_blank');
         });
         document.getElementById('prev-copy')?.addEventListener('click', () => this.copy(r.content));
     }
@@ -538,6 +597,8 @@ export class App {
 
     openRepoInVSCode(owner, repo) {
         if (!owner) ({ owner, repo } = this.state.current || {});
+        // 兜底：两个来源都没有时不要打开 /undefined/undefined
+        if (!owner || !repo) return this.toast('请先打开一个仓库', 'err');
         window.open(`https://vscode.dev/github/${owner}/${repo}`, '_blank');
     }
 
@@ -554,7 +615,7 @@ export class App {
             if (!p.ok) this.toast('仓库已建，但 Pages 启用失败：' + p.message, 'err');
         }
         this.config.add(this.state.user.login, name);
-        await this.config.save();
+        await this.saveConfig();
         this.toast(`已创建 ${name}`, 'ok');
         await this.loadAll(true);
     }
@@ -577,7 +638,7 @@ export class App {
             this.closeDialog();
             if (!res.ok) return this.toast(res.message, 'err');
             this.config.rename(owner, repo, nn);
-            await this.config.save();
+            await this.saveConfig();
             this.toast(`已改名为 ${nn}`, 'ok');
             await this.loadAll(true);
         });
@@ -610,7 +671,7 @@ export class App {
         const res = await this.api.deleteRepo(owner, repo);
         if (!res.ok) return this.toast(res.message, 'err');
         this.config.remove(owner, repo);
-        await this.config.save();
+        await this.saveConfig();
         this.toast(`已删除 ${repo}`, 'ok');
         await this.loadAll(true);
     }
@@ -618,7 +679,7 @@ export class App {
     async removeManaged(owner, repo) {
         if (!confirm(`从仓鼠的管理列表移除 ${owner}/${repo}？\n（不会删除 GitHub 上的仓库）`)) return;
         this.config.remove(owner, repo);
-        const r = await this.config.save();
+        const r = await this.saveConfig();
         if (!r.ok) return this.toast('移除失败：' + r.message, 'err');
         this.toast('已移除', 'ok');
         await this.loadAll(true);
@@ -638,7 +699,7 @@ export class App {
             const a = document.getElementById('dlg-alias').value.trim();
             this.config.setAlias(owner, repo, a);
             this.closeDialog();
-            await this.config.save();
+            await this.saveConfig();
             this.toast('已保存备注', 'ok');
         });
         document.getElementById('dlg-cancel')?.addEventListener('click', () => this.closeDialog());
@@ -709,7 +770,6 @@ export class App {
             });
         });
 
-        document.getElementById('dlg-ok')?.addEventListener('async-click', () => { });
         document.getElementById('dlg-ok')?.addEventListener('click', async () => {
             const picked = [...document.querySelectorAll('#dlg-picks input:checked')]
                 .map(i => i.value);
@@ -725,7 +785,7 @@ export class App {
                 const a = this.config.add(o, rp);
                 if (a.ok) ok++; else { fail++; lastErr = a.message; }
             }
-            const s = await this.config.save();
+            const s = await this.saveConfig();
             if (!s.ok) return this.toast('保存配置失败：' + s.message, 'err');
             this.toast(`已添加 ${ok} 个${fail ? `，${fail} 个失败 ${lastErr}` : ''}`, ok ? 'ok' : 'err');
             await this.loadAll(true);
@@ -809,6 +869,11 @@ export function timeAgo(iso) {
     if (d < 2592000) return Math.floor(d / 86400) + ' 天前';
     if (d < 31536000) return Math.floor(d / 2592000) + ' 个月前';
     return Math.floor(d / 31536000) + ' 年前';
+}
+
+/** 路径逐段编码：保留 / 分隔符，其余按 URL 编码（空格 → %20，# → %23） */
+export function encodePath(p) {
+    return String(p).split('/').map(encodeURIComponent).join('/');
 }
 
 export function fileIcon(name) {
