@@ -23,10 +23,12 @@ export const CONFIG_FILE = 'cangshu.json';
 export const DEFAULT_CONFIG_REPO = 'cangshu-config';
 
 export class ConfigStore {
-    constructor(api, owner) {
+    constructor(api, owner, repoName = null) {
         this.api = api;
         this.owner = owner;
-        this.repo = DEFAULT_CONFIG_REPO;
+        // 允许指定仓库名：测试用它隔离到独立仓库，
+        // 否则端到端测试会直接改写用户的真实配置
+        this.repo = repoName || DEFAULT_CONFIG_REPO;
         this.branch = 'main';
         this._sha = null;
         this.data = null;
@@ -72,6 +74,31 @@ export class ConfigStore {
         return r;
     }
 
+    /**
+     * 保存前把当前（服务端）版本另存一份历史快照
+     *
+     * 事故背景：端到端测试曾直接写真实配置仓库，
+     * 一次 save() 就把用户管理列表清成空数组，且无从恢复。
+     * 有了历史快照，任何一次覆盖都可追溯、可回滚。
+     */
+    async snapshot(reason = 'auto') {
+        try {
+            const r = await this.api.getFile(this.owner, this.repo, CONFIG_FILE, this.branch);
+            if (!r.ok || !r.content) return { ok: false };
+            const ts = new Date().toISOString().replace(/[:.]/g, '-');
+            const path = `history/${ts}.json`;
+            const body = JSON.stringify(
+                { reason, savedAt: new Date().toISOString(), config: JSON.parse(r.content) }, null, 2);
+            return await this.api.putFile(
+                this.owner, this.repo, path, body,
+                { message: `配置快照：${reason}`, branch: this.branch }
+            );
+        } catch (e) {
+            // 快照失败绝不能阻断正常保存
+            return { ok: false, message: e.message };
+        }
+    }
+
     async save() {
         if (!this.data) return { ok: false, message: '配置尚未加载' };
         // 写前重取 sha，避免多端并发覆盖（和 github_drive 同样的问题）
@@ -81,6 +108,8 @@ export class ConfigStore {
         else if (cur.status !== 404) return cur;
 
         this.data.updatedAt = new Date().toISOString();
+        // 覆盖前留痕：只在服务端已有配置时才快照
+        if (this._sha) await this.snapshot('before-save');
         const r = await this.api.putFile(
             this.owner, this.repo, CONFIG_FILE,
             JSON.stringify(this.data, null, 2),

@@ -3,8 +3,15 @@
  * 用 jsdom 真实跑一遍 index.html + app.js 的启动链路
  */
 import { createRequire } from 'module';
-const require = createRequire('/usr/local/lib/node_modules/');
-const { JSDOM } = require('jsdom');
+const require = createRequire(import.meta.url);
+let JSDOM;
+for (const base of ['/usr/local/lib/node_modules/', '/data/workspace/node_modules/', '']) {
+    try { JSDOM = require(base + 'jsdom').JSDOM; break; } catch (e) { /* 继续找 */ }
+}
+if (!JSDOM) {
+    console.error('需要 jsdom：npm i -g jsdom');
+    process.exit(1);
+}
 import fs from 'fs';
 
 let pass = 0, fail = 0;
@@ -415,6 +422,21 @@ console.log('\n【无远程时的降级】');
     await app.loadAll(true);
     const cards = w.document.querySelectorAll('#repo-grid .card');
     check('离线模式下仍能渲染卡片', cards.length >= 1, `${cards.length}`);
+}
+
+console.log('\n【回归：测试不得污染真实配置仓库】');
+{
+    // 事故：端到端测试用默认 cangshu-config，一次 save() 清空了用户管理列表
+    const { ConfigStore } = await import(ROOT + 'js/config.js');
+    const { GitHubAPI } = await import(ROOT + 'js/api.js');
+    const a = new GitHubAPI('t');
+    const def = new ConfigStore(a, 'Cool-zimo');
+    check('默认仍指向 cangshu-config', def.repo === 'cangshu-config', def.repo);
+    const iso = new ConfigStore(a, 'Cool-zimo', 'cangshu-config-selftest');
+    check('可指定隔离仓库', iso.repo === 'cangshu-config-selftest', iso.repo);
+    check('两个实例互不影响', def.repo !== iso.repo);
+    // 快照方法存在（保存前留痕，便于回滚）
+    check('提供 snapshot 方法', typeof def.snapshot === 'function');
 }
 
 console.log(`\n═══════ 结果：${pass} 通过 / ${fail} 失败 ═══════`);

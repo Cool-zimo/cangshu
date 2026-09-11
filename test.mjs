@@ -241,7 +241,11 @@ console.log('\n【真实 API 冒烟测试】');
         }
 
         // 配置仓库端到端
-        const cs = new ConfigStore(api, me.data.login);
+        // 关键：真实 API 测试必须隔离到独立仓库。
+        // 早期版本直接用 cangshu-config，一次 save() 就把用户
+        // 真实的管理列表清成了空数组（事故）。
+        const TEST_REPO = 'cangshu-config-selftest';
+        const cs = new ConfigStore(api, me.data.login, TEST_REPO);
         const en = await cs.ensureRepo();
         check('配置仓库就绪', en.ok, en.message);
         if (en.ok) {
@@ -250,7 +254,7 @@ console.log('\n【真实 API 冒烟测试】');
             const sv = await cs.save();
             check('配置写入成功', sv.ok, sv.message);
             // GitHub contents API 写入后有短暂读取延迟，重试等待一致性
-            const cs2 = new ConfigStore(api, me.data.login);
+            const cs2 = new ConfigStore(api, me.data.login, TEST_REPO);
             let readBack = false, lastList = [];
             for (let i = 0; i < 5; i++) {
                 await new Promise(r => setTimeout(r, 1200));
@@ -262,6 +266,8 @@ console.log('\n【真实 API 冒烟测试】');
             cs2.remove(me.data.login, 'xiudao');
             await cs2.save();
         }
+        // 用完即删，不留垃圾
+        await api.deleteRepo(me.data.login, TEST_REPO).catch(() => {});
     }
 }
 
