@@ -150,6 +150,8 @@ export class App {
 
         await this.bootConfig();
         await this.loadAll();
+        // 如果是从 GitHub Drive 带上下文跳过来的，登录后立刻定位
+        await this.applyBridgeContext();
     }
 
     loginError(msg) {
@@ -183,14 +185,18 @@ export class App {
         const B = this.bridge;
         if (!B || !B.other()) return;
 
-        // 顶栏切换按钮
+        // 顶栏：应用栏（两个应用平铺，当前高亮）
         const slot = document.getElementById('app-switch-slot');
         if (slot) {
-            slot.innerHTML = B.switchButtonHtml();
-            document.getElementById('app-switch-btn')?.addEventListener('click', () => {
-                // 带上当前正在看的仓库，跳过去能直接定位
-                const cur = this.state.current;
-                B.go(cur ? { repo: `${cur.owner}/${cur.repo}` } : {});
+            slot.innerHTML = B.appBarHtml();
+            slot.querySelectorAll('.ab-item').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    const to = btn.dataset.app;
+                    if (to === B.current()?.id) return;
+                    // 带上当前工作上下文，对方打开就是同一个仓库
+                    const cur = this.state.current;
+                    this.goToApp(to, cur ? { repo: `${cur.owner}/${cur.repo}` } : {});
+                });
             });
         }
 
@@ -216,20 +222,81 @@ export class App {
         }
     }
 
+    /** 跳到另一个应用：先存状态，再带上下文过去 */
+    goToApp(appId, params) {
+        const B = this.bridge;
+        if (!B) return;
+        B.saveState({
+            view: this.state.view,
+            filter: this.state.filter,
+            scroll: window.scrollY || 0,
+            repo: this.state.current ? `${this.state.current.owner}/${this.state.current.repo}` : ''
+        });
+        B.go(params || {});
+    }
+
+    /**
+     * 消费跳转带过来的上下文：定位 + 高亮 + 恢复状态
+     * 这是"像同一个软件"的核心体验
+     */
+    async applyBridgeContext() {
+        const B = this.bridge;
+        if (!B) return;
+        const ctx = B.consume();
+        if (!ctx) return;
+
+        // 恢复离开时的状态（视图/过滤词）
+        if (ctx.filter) {
+            this.state.filter = ctx.filter;
+            const si = document.getElementById('search-input');
+            if (si) si.value = ctx.filter;
+        }
+
+        // 定位到指定仓库：滚动 + 高亮脉冲
+        if (ctx.repo) {
+            const [o, rp] = ctx.repo.split('/');
+            if (o && rp) {
+                const target = { owner: o, repo: rp };
+                // 若该仓库不在管理列表，顺手加上，避免"跳过来却找不到"
+                if (!this.config?.has(o, rp)) {
+                    this.config?.add(o, rp);
+                    this.saveConfig().catch(() => {});
+                    await this.loadAll(true);
+                }
+                this.focusRepo(target);
+                if (ctx.view === 'files' || ctx.path) this.openFiles(o, rp);
+            }
+        }
+
+        // 恢复滚动位置
+        const st = B.loadState();
+        if (st && typeof st.scroll === 'number') {
+            requestAnimationFrame(() => window.scrollTo(0, st.scroll));
+        }
+        B.clearState();
+    }
+
+    /** 把某张卡片滚到视野中央并高亮脉冲 */
+    focusRepo(target) {
+        const tryFocus = (times) => {
+            const el = document.querySelector(
+                `.card[data-owner="${CSS.escape(target.owner)}"][data-repo="${CSS.escape(target.repo)}"]`);
+            if (!el) {
+                if (times > 0) setTimeout(() => tryFocus(times - 1), 120);
+                return;
+            }
+            el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            el.classList.add('card-focus');
+            setTimeout(() => el.classList.remove('card-focus'), 2200);
+        };
+        tryFocus(12);
+    }
+
     /** 保存令牌时同步给对方应用，让对面也变已登录 */
     saveTokenToBridge(token, user) {
         const B = this.bridge;
         if (!B) return;
         try { B.saveToken(token, user); } catch (e) { /* 不影响主流程 */ }
-    }
-
-    /** 处理从 GitHub Drive 带过来的参数（读完即清，避免刷新重复触发） */
-    consumeBridgeParams() {
-        const B = this.bridge;
-        if (!B) return null;
-        const repo = B.param('repo');
-        B.cleanParams();
-        return repo;
     }
 
     async bootConfig() {
@@ -278,7 +345,9 @@ export class App {
             this._saveLocalConfig();
             return { ok: true, local: true };
         }
-        const r = await this.saveConfig();
+        // 注意：这里必须是 config.save()，不能是 this.saveConfig()
+        // 否则会无限递归直接栈溢出（上一轮批量替换时误伤过一次）
+        const r = await this.config.save();
         if (!r.ok) {
             this.offlineConfig = true;
             this._saveLocalConfig();
@@ -484,30 +553,45 @@ export class App {
         e.preventDefault();
         const r = this.findRepo(owner, repo);
         if (!r) return;
+
+        // 图标统一走 SVG 集：emoji 各浏览器渲染不一致，
+        // 且无法跟随暗色主题变色
+        const ico = (n) => (window.Icons ? window.Icons.get(n, { size: 15 }) : '');
+
         this.ctx.show(e.clientX, e.clientY, [
-            { icon: '📂', label: '浏览文件', onClick: () => this.openFiles(owner, repo) },
-            { icon: '💠', label: '在 VS Code 打开', onClick: () => this.openRepoInVSCode(owner, repo) },
-            { icon: '🐙', label: 'GitHub 页面', onClick: () => window.open(r.html_url, '_blank') },
+            { icon: ico('folderOpen'), label: '浏览文件', onClick: () => this.openFiles(owner, repo) },
+            { icon: ico('code'), label: '在 VS Code 打开', onClick: () => this.openRepoInVSCode(owner, repo) },
+            { icon: ico('external'), label: 'GitHub 页面', onClick: () => window.open(r.html_url, '_blank') },
             r.pages?.enabled && {
-                icon: '🌐', label: '打开 Pages 站点',
+                icon: ico('globe'), label: '打开 Pages 站点',
                 onClick: () => window.open(r.pages.url, '_blank')
             },
             { sep: true },
-            { icon: '✏️', label: '改名', onClick: () => this.showRename(owner, repo) },
             {
-                icon: '👁️', label: r.private ? '设为公开' : '设为私有',
-                onClick: () => this.toggleVisibility(owner, repo)
+                icon: ico('settings'), label: '仓库设置',
+                children: [
+                    { icon: ico('edit'), label: '改名', onClick: () => this.showRename(owner, repo) },
+                    {
+                        icon: ico(r.private ? 'unlock' : 'lock'),
+                        label: r.private ? '设为公开' : '设为私有',
+                        onClick: () => this.toggleVisibility(owner, repo)
+                    },
+                    { icon: ico('tag'), label: '设置备注名', onClick: () => this.showAlias(owner, repo) }
+                ]
             },
-            { icon: '🏷️', label: '设置备注名', onClick: () => this.showAlias(owner, repo) },
+            {
+                icon: ico('copy'), label: '复制',
+                children: [
+                    {
+                        icon: ico('link'), label: 'git 地址',
+                        onClick: () => this.copy(`https://github.com/${owner}/${repo}.git`)
+                    },
+                    { icon: ico('book'), label: '仓库名', onClick: () => this.copy(`${owner}/${repo}`) }
+                ]
+            },
             { sep: true },
             {
-                icon: '📋', label: '复制 git 地址',
-                onClick: () => this.copy(`https://github.com/${owner}/${repo}.git`)
-            },
-            { icon: '📋', label: '复制仓库名', onClick: () => this.copy(`${owner}/${repo}`) },
-            { sep: true },
-            {
-                icon: '➖', label: '从管理列表移除', danger: true,
+                icon: ico('trash'), label: '从管理列表移除', danger: true,
                 onClick: () => this.removeManaged(owner, repo)
             }
         ].filter(Boolean));
@@ -618,20 +702,25 @@ export class App {
             : `https://vscode.dev/github/${owner}/${repo}/blob/${branch}/${enc}`;
         const ghUrl = `https://github.com/${owner}/${repo}/${isDir ? 'tree' : 'blob'}/${branch}/${enc}`;
 
+        const ico = (n) => (window.Icons ? window.Icons.get(n, { size: 15 }) : '');
+
         this.ctx.show(e.clientX, e.clientY, [
             {
-                icon: '💠', label: isDir ? '在 VS Code 打开仓库' : '在 VS Code 中打开',
+                icon: ico('code'), label: isDir ? '在 VS Code 打开仓库' : '在 VS Code 中打开',
                 onClick: () => window.open(vsUrl, '_blank')
             },
-            { icon: '🐙', label: '在 GitHub 查看', onClick: () => window.open(ghUrl, '_blank') },
+            { icon: ico('external'), label: '在 GitHub 查看', onClick: () => window.open(ghUrl, '_blank') },
             { sep: true },
-            { icon: '📋', label: '复制路径', onClick: () => this.copy(path) },
             {
-                icon: '📋', label: '复制 VS Code 链接',
-                onClick: () => this.copy(vsUrl)
+                icon: ico('copy'), label: '复制',
+                children: [
+                    { icon: ico('fileText'), label: '文件路径', onClick: () => this.copy(path) },
+                    { icon: ico('link'), label: 'VS Code 链接', onClick: () => this.copy(vsUrl) },
+                    { icon: ico('link'), label: 'GitHub 链接', onClick: () => this.copy(ghUrl) }
+                ]
             },
             !isDir && {
-                icon: '📥', label: '下载文件',
+                icon: ico('download'), label: '下载文件',
                 onClick: () => window.open(
                     `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${enc}`, '_blank')
             }

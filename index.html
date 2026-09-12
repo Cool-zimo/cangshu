@@ -5,8 +5,10 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>仓鼠 · GitHub 仓库管理面板</title>
-    <link rel="icon"
-        href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🐹</text></svg>">
+    <!-- 品牌图标：用真实 PNG 而非 emoji，避免各浏览器字形不一致 -->
+    <link rel="icon" type="image/png" sizes="32x32" href="assets/icon-cangshu-32.png">
+    <link rel="icon" type="image/png" sizes="192x192" href="assets/icon-cangshu-192.png">
+    <link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
     <link rel="stylesheet" href="css/style.css">
 </head>
 
@@ -14,7 +16,7 @@
     <!-- ============ 登录页 ============ -->
     <div id="login-screen" class="login-screen">
         <div class="login-card">
-            <div class="login-logo">🐹</div>
+            <div class="login-logo"><img src="assets/icon-cangshu-192.png" alt="仓鼠" width="72" height="72"></div>
             <h1>仓鼠</h1>
             <p class="login-subtitle">囤好你的每一个 GitHub 仓库</p>
 
@@ -50,7 +52,7 @@
     <div id="main-screen" class="main-screen hidden">
         <header class="topbar">
             <div class="brand">
-                <span class="brand-logo">🐹</span>
+                <span class="brand-logo"><img src="assets/icon-cangshu-192.png" alt="" width="22" height="22"></span>
                 <span class="brand-name">仓鼠</span>
             </div>
 
@@ -114,6 +116,7 @@
     <div id="toast" class="toast"></div>
 
     <script src="js/bridge.js"></script>
+    <script src="js/icons.js"></script>
     <script type="module">
         import { App } from './js/app.js';
         const app = new App();

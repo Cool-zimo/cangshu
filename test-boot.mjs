@@ -5,8 +5,9 @@
 import { createRequire } from 'module';
 const require = createRequire(import.meta.url);
 let JSDOM;
-for (const base of ['/usr/local/lib/node_modules/', '/data/workspace/node_modules/', '']) {
-    try { JSDOM = require(base + 'jsdom').JSDOM; break; } catch (e) { /* 继续找 */ }
+// 候选路径本身就是完整入口，不要再拼 'jsdom'
+for (const p of ['/usr/local/lib/node_modules/jsdom/lib/api.js', '/data/workspace/node_modules/jsdom', 'jsdom']) {
+    try { JSDOM = require(p).JSDOM; break; } catch (e) { /* 继续找下一个 */ }
 }
 if (!JSDOM) {
     console.error('需要 jsdom：npm i -g jsdom');
@@ -106,9 +107,28 @@ function buildDom() {
     return dom;
 }
 
+
+/** 把 bridge.js / icons.js 注入到 jsdom 的 window */
+function injectShared(w) {
+    for (const f of ['js/bridge.js', 'js/icons.js']) {
+        try {
+            const code = fs.readFileSync(ROOT + f, 'utf8');
+            new Function('window', 'globalThis', code)(w, w);
+        } catch (e) {
+            console.log(`  ⚠ 注入 ${f} 失败: ${e.message}`);
+        }
+    }
+}
+
 async function boot(opts = {}) {
     const dom = buildDom();
     const w = dom.window;
+
+    // jsdom 默认不执行外部 <script>，这里手动注入共享组件。
+    // 生产环境由 index.html 引入；不注入的话菜单会走降级分支，
+    // 测不到真实的二级菜单与 SVG 图标。
+    injectShared(w);
+
     w.fetch = makeFetch(opts);
     global.window = w;
     global.document = w.document;
@@ -272,15 +292,36 @@ console.log('\n【右键菜单】');
     check('右键弹出菜单', !!menu);
     if (menu) {
         const labels = [...menu.querySelectorAll('.ctx-item')].map(b => b.textContent.trim());
+        check('含「浏览文件」', labels.some(t => /浏览文件/.test(t)), labels.join('|'));
         check('含「在 VS Code 打开」', labels.some(t => /VS Code/.test(t)), labels.join('|'));
-        check('含「改名」', labels.some(t => /改名/.test(t)));
-        check('含「切换公开性」项', labels.some(t => /公开|私有/.test(t)));
         check('含「从管理列表移除」', labels.some(t => /移除/.test(t)));
         check('含 Pages 跳转（xiudao 已启用）', labels.some(t => /Pages/.test(t)), labels.join('|'));
         check('含分割线', menu.querySelectorAll('.ctx-sep').length > 0);
+
+        // ---- 二级菜单：改名/公开性已收进「仓库设置」----
+        check('主菜单不再平铺「改名」', !labels.some(t => /^改名$/.test(t)), labels.join('|'));
+        const groupItem = [...menu.querySelectorAll('.ctx-item')].find(b => /仓库设置/.test(b.textContent));
+        check('含「仓库设置」分组', !!groupItem, labels.join('|'));
+        check('分组项有展开箭头', !!groupItem?.querySelector('.ctx-arrow'));
+
+        // hover 展开子菜单
+        groupItem?.dispatchEvent(new w.MouseEvent('mouseenter', { bubbles: false }));
+        const sub = d.querySelector('.ctx-sub');
+        check('展开二级菜单', !!sub);
+        if (sub) {
+            const subLabels = [...sub.querySelectorAll('.ctx-item')].map(b => b.textContent.trim());
+            check('子菜单含「改名」', subLabels.some(t => /改名/.test(t)), subLabels.join('|'));
+            check('子菜单含公开性切换', subLabels.some(t => /公开|私有/.test(t)), subLabels.join('|'));
+            check('子菜单含备注名', subLabels.some(t => /备注/.test(t)), subLabels.join('|'));
+        }
+
+        // 图标应已换成 SVG，不再用 emoji
+        check('菜单图标为 SVG', menu.querySelectorAll('.ctx-ico svg').length > 0,
+            `${menu.querySelectorAll('.ctx-ico svg').length} 个 SVG`);
     }
     app.ctx.hide();
     check('关闭后菜单移除', !d.querySelector('.ctx-menu'));
+    check('关闭后子菜单也移除', !d.querySelector('.ctx-sub'));
 }
 
 console.log('\n【vscode.dev 链接】');
@@ -383,6 +424,7 @@ console.log('\n【无远程时的降级】');
     // 配置仓库不可用：不应卡死，仍能进入主界面
     const dom = buildDom();
     const w = dom.window;
+    injectShared(w);
     w.fetch = async (url, init) => {
         const m = String(url);
         const json = (o, s = 200) => ({ ok: s < 400, status: s, text: async () => JSON.stringify(o) });

@@ -307,6 +307,249 @@
         },
 
         /**
+         * 规范化菜单项：给每项补 id、识别二级菜单
+         * 供 createMenu 内部使用
+         */
+        _normItems: function (items) {
+            var out = [];
+            for (var i = 0; i < (items || []).length; i++) {
+                var it = items[i];
+                if (!it) continue;
+                if (it.sep) { out.push({ sep: true }); continue; }
+                var n = {
+                    id: 'mi-' + i + '-' + Math.random().toString(36).slice(2, 7),
+                    icon: it.icon || '',
+                    label: it.label || '',
+                    danger: !!it.danger,
+                    disabled: !!it.disabled,
+                    shortcut: it.shortcut || '',
+                    onClick: it.onClick || null,
+                    children: null
+                };
+                if (it.children && it.children.length) {
+                    n.children = this._normItems(it.children);
+                    // 子项全禁用时，父项也算禁用
+                    var allOff = n.children.every(function (c) { return c.sep || c.disabled; });
+                    if (allOff) n.disabled = true;
+                }
+                out.push(n);
+            }
+            // 去掉首尾与连续的分割线，避免出现"悬空横线"
+            var cleaned = [];
+            for (var k = 0; k < out.length; k++) {
+                var cur = out[k];
+                if (!cur.sep) { cleaned.push(cur); continue; }
+                if (cleaned.length === 0) continue;                    // 开头
+                if (cleaned[cleaned.length - 1].sep) continue;         // 连续
+                cleaned.push(cur);
+            }
+            while (cleaned.length && cleaned[cleaned.length - 1].sep) cleaned.pop();
+            return cleaned;
+        },
+
+        /** 菜单项是否可交互（分割线不算） */
+        _isItem: function (it) { return it && !it.sep && !it.disabled; },
+
+        /**
+         * 创建上下文菜单（支持二级菜单，两个应用共用）
+         *
+         * 为什么不用原生/静态 HTML 菜单：
+         *   · 静态菜单无法按文件类型动态增删项
+         *   · 11 项平铺会让菜单很高，在笔记本上必然被裁
+         *   · 二级菜单能把"常用操作"和"高级操作"分层
+         *
+         * 用法：
+         *   Bridge.createMenu(items).show(e.clientX, e.clientY)
+         *
+         * items: [{ icon, label, onClick, danger, disabled, shortcut },
+         *         { sep: true },
+         *         { label:'更多', children:[...] }]
+         *
+         * @param {Array} items
+         * @param {Object} opts { onClose, zIndex }
+         */
+        createMenu: function (items, opts) {
+            var self = this;
+            var o = opts || {};
+            var doc = global.document;
+
+            var menu = null;        // 主菜单 DOM
+            var sub = null;         // 当前打开的子菜单 DOM
+            var itemsData = this._normItems(items);
+            var openTimer = null;   // 子菜单延迟展开
+            var closeTimer = null;  // 子菜单延迟收起
+            var SUB_DELAY = 140;    // 展开延迟，避免鼠标划过时闪动
+            var CLOSE_DELAY = 220;  // 收起延迟，允许鼠标斜向移动过去
+
+            function mkEl(cls) {
+                var d = doc.createElement('div');
+                d.className = cls;
+                return d;
+            }
+
+            /** 渲染一个菜单到 DOM（返回元素，尚未定位） */
+            function render(list, isSub) {
+                var box = mkEl('ctx-menu' + (isSub ? ' ctx-sub' : ''));
+                if (o.zIndex) box.style.zIndex = o.zIndex;
+                for (var i = 0; i < list.length; i++) {
+                    var it = list[i];
+                    if (it.sep) { box.appendChild(mkEl('ctx-sep')); continue; }
+
+                    var b = doc.createElement('button');
+                    b.className = 'ctx-item' + (it.danger ? ' danger' : '');
+                    b.disabled = it.disabled;
+                    b.setAttribute('data-id', it.id);
+
+                    var html = '<span class="ctx-ico">';
+                    // icon 可以是 SVG 字符串或纯文本（emoji/字符）
+                    if (/^\s*<svg/.test(it.icon)) html += it.icon;
+                    else if (it.icon) html += '<span class="ctx-emoji">' + it.icon + '</span>';
+                    else html += '<span class="ctx-emoji"></span>';
+                    html += '</span>';
+                    html += '<span class="ctx-label"></span>';
+                    if (it.shortcut) html += '<span class="ctx-key">' + it.shortcut + '</span>';
+                    if (it.children) html += '<span class="ctx-arrow">\u25B8</span>';
+                    b.innerHTML = html;
+                    // 用 textContent 设 label，天然防注入
+                    b.querySelector('.ctx-label').textContent = it.label;
+
+                    (function (node, parentBox) {
+                        if (node.children) {
+                            b.addEventListener('mouseenter', function () { openSub(node, b, parentBox); });
+                            b.addEventListener('mouseleave', scheduleCloseSub);
+                            b.addEventListener('click', function (e) {
+                                e.stopPropagation();
+                                openSub(node, b, parentBox);
+                            });
+                        } else {
+                            b.addEventListener('click', function (e) {
+                                e.stopPropagation();
+                                if (node.disabled) return;
+                                api.hide();
+                                if (node.onClick) node.onClick();
+                            });
+                        }
+                    })(it, box);
+
+                    box.appendChild(b);
+                }
+                return box;
+            }
+
+            function closeSub() {
+                if (openTimer) { clearTimeout(openTimer); openTimer = null; }
+                if (sub) { sub.remove(); sub = null; }
+                if (menu) {
+                    var act = menu.querySelector('.ctx-item.has-sub');
+                    if (act) act.classList.remove('has-sub');
+                }
+            }
+
+            function scheduleCloseSub() {
+                if (closeTimer) clearTimeout(closeTimer);
+                closeTimer = setTimeout(closeSub, CLOSE_DELAY);
+            }
+
+            function cancelCloseSub() {
+                if (closeTimer) { clearTimeout(closeTimer); closeTimer = null; }
+            }
+
+            /** 展开二级菜单 */
+            function openSub(node, btn, parentBox) {
+                cancelCloseSub();
+                if (sub && sub._ownerId === node.id) return;   // 已经是这个了
+                closeSub();
+
+                var sb = render(node.children, true);
+                sb._ownerId = node.id;
+                doc.body.appendChild(sb);
+
+                // 定位：贴在父菜单右侧，放不下就翻到左侧
+                var pr = btn.getBoundingClientRect();
+                var targetX = pr.right - 3;
+                var targetY = pr.top - 5;
+                var r = self.placeMenu(sb, targetX, targetY);
+                // placeMenu 会翻转，但如果翻转到了父菜单左侧更远处，
+                // 直接强制贴父菜单左边（更符合直觉）
+                var boxRect = sb.getBoundingClientRect();
+                if (r.flippedX) {
+                    var left = pr.left - boxRect.width + 3;
+                    if (left >= 6) {
+                        sb.style.left = left + 'px';
+                        sb.style.transformOrigin = 'top right';
+                    }
+                }
+                sb.classList.add('on');
+                // 鼠标进入子菜单时取消收起计时，允许移过去点
+                sb.addEventListener('mouseenter', cancelCloseSub);
+                sb.addEventListener('mouseleave', scheduleCloseSub);
+                btn.classList.add('has-sub');
+                sub = sb;
+            }
+
+            var onDocDown = function (e) {
+                if (menu && menu.contains(e.target)) return;
+                if (sub && sub.contains(e.target)) return;
+                api.hide();
+            };
+            var onKey = function (e) { if (e.key === 'Escape') api.hide(); };
+            var onWheel = function () { api.hide(); };   // 滚动时位置会失效，直接关
+
+            var api = {
+                /**
+                 * 显示菜单
+                 * 注意：开头会先清理上一次的残留，这次清理是内部行为，
+                 * 绝不能触发 onClose —— 否则调用方在 show() 之后
+                 * 拿到的句柄会被自己的 onClose 置空，
+                 * 后续 hide() 就成了空操作，菜单永远关不掉。
+                 */
+                show: function (x, y) {
+                    api.hide(true);
+                    menu = render(itemsData, false);
+                    doc.body.appendChild(menu);
+                    // 复用 placeMenu：翻转让靠边时也能完整显示
+                    self.placeMenu(menu, x, y);
+                    menu.classList.add('on');
+                    menu.addEventListener('mouseleave', scheduleCloseSub);
+                    menu.addEventListener('mouseenter', cancelCloseSub);
+                    // 捕获阶段 + 延后注册，避免被本次事件立刻关掉
+                    setTimeout(function () {
+                        doc.addEventListener('mousedown', onDocDown, true);
+                        doc.addEventListener('contextmenu', onDocDown, true);
+                        doc.addEventListener('keydown', onKey);
+                        doc.addEventListener('wheel', onWheel, true);
+                        if (o.zIndex) {}
+                    }, 0);
+                    return api;
+                },
+
+                /**
+                 * 关闭菜单与所有子菜单
+                 * @param {boolean} silent 静默关闭（不触发 onClose），供 show() 内部清理用
+                 */
+                hide: function (silent) {
+                    if (openTimer) { clearTimeout(openTimer); openTimer = null; }
+                    if (closeTimer) { clearTimeout(closeTimer); closeTimer = null; }
+                    closeSub();
+                    if (menu) { menu.remove(); menu = null; }
+                    doc.removeEventListener('mousedown', onDocDown, true);
+                    doc.removeEventListener('contextmenu', onDocDown, true);
+                    doc.removeEventListener('keydown', onKey);
+                    doc.removeEventListener('wheel', onWheel, true);
+                    if (!silent && o.onClose) o.onClose();
+                },
+
+                /** 内部：暴露给测试 */
+                _items: function () { return itemsData; },
+                _el: function () { return menu; },
+                _sub: function () { return sub; }
+            };
+            return api;
+        },
+        /** 菜单项是否可交互（分割线不算） */
+        _isItem: function (it) { return it && !it.sep && !it.disabled; },
+
+        /**
          * 生成"应用栏"HTML：两个应用平铺，当前的高亮
          * 视觉上像同一个软件的两个标签页
          */

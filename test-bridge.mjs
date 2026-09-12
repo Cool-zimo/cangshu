@@ -45,22 +45,22 @@ console.log('\n【② URL 计算】');
 {
     const w=mkWin('/cangshu/'); const B=loadBridge(w);
     B.go();
-    check('从仓鼠跳到 drive', w.location.href==='https://cool-zimo.github.io/github_drive/', w.location.href);
+    check('从仓鼠跳到 drive（带来源标记）', w.location.href==='https://cool-zimo.github.io/github_drive/?from=cangshu', w.location.href);
 }
 {
     const w=mkWin('/github_drive/index.html'); const B=loadBridge(w);
     B.go();
-    check('从 drive 跳到仓鼠（不继承 index.html）', w.location.href==='https://cool-zimo.github.io/cangshu/', w.location.href);
+    check('从 drive 跳到仓鼠（不继承 index.html）', w.location.href==='https://cool-zimo.github.io/cangshu/?from=drive', w.location.href);
 }
 {
     const w=mkWin('/github_drive/sub/dir/page.html'); const B=loadBridge(w);
     B.go();
-    check('深层路径也只保留第一段', w.location.href==='https://cool-zimo.github.io/cangshu/', w.location.href);
+    check('深层路径也只保留第一段', w.location.href==='https://cool-zimo.github.io/cangshu/?from=drive', w.location.href);
 }
 {
     const w=mkWin('/cangshu/'); const B=loadBridge(w);
     B.go({repo:'Cool-zimo/xiudao'});
-    check('跳转带参数', w.location.href.includes('?repo=Cool-zimo%2Fxiudao'), w.location.href);
+    check('跳转带参数', w.location.href.includes('repo=Cool-zimo%2Fxiudao'), w.location.href);
 }
 
 console.log('\n【③ 令牌互认（核心）】');

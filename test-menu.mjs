@@ -126,5 +126,75 @@ console.log('\n【⑨ 重复调用不残留上次收缩】');
     check('小菜单原位不翻转', el.style.left==='100px', el.style.left);
 }
 
+console.log('\n【⑩ 菜单生命周期（Bridge.createMenu）】');
+{
+    const fs2=(await import('fs')).default;
+    function mkDoc(){
+        const store={};
+        const els=[];
+        const doc={
+            body:{
+                appendChild(el){ els.push(el); },
+                removeChild(el){ const i=els.indexOf(el); if(i>=0) els.splice(i,1); }
+            },
+            createElement(tag){
+                return {
+                    tag, className:'', children:[], _html:'',
+                    style:{},
+                    classList:{ _s:new Set(), add(c){this._s.add(c);}, remove(c){this._s.delete(c);},
+                                contains(c){return this._s.has(c);} },
+                    innerHTML:'', textContent:'',
+                    appendChild(c){ this.children.push(c); },
+                    remove(){ const i=els.indexOf(this); if(i>=0) els.splice(i,1); },
+                    addEventListener(){}, removeEventListener(){},
+                    // createMenu 会往 .ctx-label 写文本、对 .has-sub 调 classList，
+                    // 这里返回带完整接口的占位元素
+                    querySelector(){ return {
+                        textContent:'',
+                        classList:{ _s:new Set(), add(c){this._s.add(c);},
+                                    remove(c){this._s.delete(c);},
+                                    contains(c){return this._s.has(c);} }
+                    }; },
+                    querySelectorAll(){ return []; },
+                    getBoundingClientRect(){ return {left:0,top:0,right:0,bottom:0,width:180,height:200}; },
+                    setAttribute(){}, contains(){ return false; }
+                };
+            },
+            addEventListener(){}, removeEventListener(){},
+            documentElement:{clientWidth:1200,clientHeight:800}
+        };
+        return {doc, els};
+    }
+
+    const code=fs2.readFileSync('./js/bridge.js','utf8');
+    const {doc, els}=mkDoc();
+    const win={
+        innerWidth:1200, innerHeight:800, document:doc,
+        location:{pathname:'/cangshu/',origin:'https://x',search:''},
+        history:{replaceState(){}},
+        localStorage:{getItem:()=>null,setItem(){}}
+    };
+    new Function('window','globalThis',code)(win,win);
+    const B=win.Bridge;
+
+    // 关键回归：show() 内部的清理不得触发 onClose，
+    // 否则调用方句柄被置空 → 后续 hide() 无效 → 菜单关不掉
+    let closeCount=0;
+    const m=B.createMenu([{label:'A',onClick(){}}],{onClose:()=>{closeCount++;}});
+    check('show 前未触发 onClose', closeCount===0, `${closeCount} 次`);
+    m.show(10,10);
+    check('show 后仍未触发 onClose（关键）', closeCount===0, `${closeCount} 次`);
+    check('show 后菜单已挂载', !!m._el());
+    m.hide();
+    check('hide 后触发 onClose 一次', closeCount===1, `${closeCount} 次`);
+    check('hide 后菜单已卸载', !m._el());
+
+    // 重复 show 不残留
+    const m2=B.createMenu([{label:'B'}]);
+    m2.show(10,10); m2.show(20,20);
+    check('重复 show 只有一个菜单', els.filter(e=>e.className&&e.className.indexOf('ctx-menu')===0).length===1,
+        `${els.filter(e=>e.className&&e.className.indexOf('ctx-menu')===0).length} 个`);
+}
+
 console.log(`\n═══════ 结果：${pass} 通过 / ${fail} 失败 ═══════`);
 process.exit(fail>0?1:0);
