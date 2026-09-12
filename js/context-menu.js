@@ -43,12 +43,18 @@ export class ContextMenu {
 
         document.body.appendChild(el);
 
-        // 先渲染再定位：需要知道菜单实际尺寸才能做边界翻转
-        const r = el.getBoundingClientRect();
-        const px = (x + r.width + 8 > window.innerWidth) ? Math.max(4, x - r.width - 4) : x;
-        const py = (y + r.height + 8 > window.innerHeight) ? Math.max(4, y - r.height - 4) : y;
-        el.style.left = px + 'px';
-        el.style.top = py + 'px';
+        // 先渲染再定位：需要知道菜单实际尺寸才能做边界处理
+        // 统一走 Bridge.placeMenu（与 GitHub Drive 共用同一套算法）：
+        // 翻转 → 夹取 → 收缩三层保险，且用 offsetWidth 避开入场动画
+        // transform: scale(.96) 对 getBoundingClientRect 的干扰
+        const B = window.Bridge;
+        if (B && B.placeMenu) {
+            B.placeMenu(el, x, y);
+        } else {
+            const r = el.getBoundingClientRect();
+            el.style.left = Math.max(4, Math.min(x, window.innerWidth - r.width - 8)) + 'px';
+            el.style.top = Math.max(4, Math.min(y, window.innerHeight - r.height - 8)) + 'px';
+        }
         el.classList.add('on');
 
         this.el = el;
