@@ -30,6 +30,12 @@
                     <div id="saved-list"></div>
                 </div>
 
+                <div id="bridge-box" class="bridge-box" style="display:none">
+                    <div class="bridge-title">🔗 检测到 GitHub Drive 已登录</div>
+                    <div id="bridge-info" class="bridge-info"></div>
+                    <button id="bridge-btn" class="bridge-btn" type="button">沿用该账号，免输入进入</button>
+                </div>
+
                 <a href="https://github.com/settings/tokens/new?scopes=repo&description=cangshu" target="_blank"
                     class="token-link">没有令牌？点这里创建 →</a>
             </div>
@@ -53,6 +59,7 @@
             </div>
 
             <div class="topbar-acts">
+                <span id="app-switch-slot"></span>
                 <button id="refresh-btn" title="刷新">🔄 刷新</button>
                 <button id="new-repo-btn" class="primary">➕ 新建仓库</button>
                 <button id="add-repo-btn">📥 添加</button>
@@ -106,6 +113,7 @@
 
     <div id="toast" class="toast"></div>
 
+    <script src="js/bridge.js"></script>
     <script type="module">
         import { App } from './js/app.js';
         const app = new App();

@@ -943,3 +943,75 @@ code {
         padding: 30px 22px;
     }
 }
+
+/* ============ 与 GitHub Drive 联动 ============ */
+
+.app-switch-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 12px;
+    border: 1px solid var(--border, #d0d7de);
+    border-radius: 6px;
+    background: #fff;
+    color: #24292f;
+    font-size: 13px;
+    cursor: pointer;
+    transition: background .15s, border-color .15s;
+    white-space: nowrap;
+}
+
+.app-switch-btn:hover {
+    background: #f3f4f6;
+    border-color: #8c959f;
+}
+
+.app-switch-btn .as-icon {
+    font-size: 15px;
+}
+
+/* 登录页「沿用对方账号」区块 */
+.bridge-box {
+    margin-top: 14px;
+    padding: 12px 14px;
+    background: linear-gradient(135deg, #fff8e6 0%, #fffdf5 100%);
+    border: 1px solid #f0d89a;
+    border-radius: 8px;
+}
+
+.bridge-title {
+    font-size: 12px;
+    font-weight: 600;
+    color: #7a5c00;
+    margin-bottom: 8px;
+}
+
+.bridge-info {
+    font-size: 13px;
+    color: #24292f;
+    margin-bottom: 10px;
+}
+
+.bridge-note {
+    display: block;
+    font-size: 11px;
+    color: #6b7280;
+    margin-top: 3px;
+}
+
+.bridge-btn {
+    width: 100%;
+    padding: 8px 12px;
+    background: #f0b429;
+    color: #24292f;
+    border: none;
+    border-radius: 6px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background .15s;
+}
+
+.bridge-btn:hover {
+    background: #e0a520;
+}

@@ -41,6 +41,7 @@ export class App {
     // ================= 启动 =================
 
     init() {
+        this.setupBridge();
         this.dom = {
             login: document.getElementById('login-screen'),
             main: document.getElementById('main-screen'),
@@ -133,6 +134,10 @@ export class App {
         localStorage.setItem(LS_USER, JSON.stringify({
             login: r.data.login, avatar_url: r.data.avatar_url, name: r.data.name
         }));
+        // 同步给 GitHub Drive，让对面也是已登录状态
+        this.saveTokenToBridge(token, {
+            login: r.data.login, avatar_url: r.data.avatar_url, name: r.data.name
+        });
 
         this.api = api;
         this.state.user = r.data;
@@ -164,6 +169,69 @@ export class App {
     }
 
     /** 准备配置仓库（不存在就建） */
+    // ================= 与 GitHub Drive 联动 =================
+
+    get bridge() { return (typeof window !== 'undefined') ? window.Bridge : null; }
+
+    /**
+     * 挂载跨应用切换按钮 + 检测对方是否已登录
+     *
+     * 两个应用同在 cool-zimo.github.io 下，localStorage 共享，
+     * 所以在一边登录过，另一边能直接沿用，无需再输一遍令牌。
+     */
+    setupBridge() {
+        const B = this.bridge;
+        if (!B || !B.other()) return;
+
+        // 顶栏切换按钮
+        const slot = document.getElementById('app-switch-slot');
+        if (slot) {
+            slot.innerHTML = B.switchButtonHtml();
+            document.getElementById('app-switch-btn')?.addEventListener('click', () => {
+                // 带上当前正在看的仓库，跳过去能直接定位
+                const cur = this.state.current;
+                B.go(cur ? { repo: `${cur.owner}/${cur.repo}` } : {});
+            });
+        }
+
+        // 登录页：对方已登录则提供"沿用"
+        if (B.otherHasToken()) {
+            const box = document.getElementById('bridge-box');
+            const info = document.getElementById('bridge-info');
+            const btn = document.getElementById('bridge-btn');
+            if (box) box.style.display = '';
+            if (info) {
+                const u = B.findUser();
+                const other = B.other();
+                info.innerHTML = `${other.icon} <strong>${esc(u?.login || '已登录账号')}</strong>` +
+                    `<span class="bridge-note">（令牌只在你本机浏览器里，不会上传）</span>`;
+            }
+            btn?.addEventListener('click', async () => {
+                const t = B.findToken();
+                if (!t) return this.toast('未读到令牌，请手动输入', 'err');
+                const inp = document.getElementById('token-input');
+                if (inp) inp.value = t;
+                await this.login();
+            });
+        }
+    }
+
+    /** 保存令牌时同步给对方应用，让对面也变已登录 */
+    saveTokenToBridge(token, user) {
+        const B = this.bridge;
+        if (!B) return;
+        try { B.saveToken(token, user); } catch (e) { /* 不影响主流程 */ }
+    }
+
+    /** 处理从 GitHub Drive 带过来的参数（读完即清，避免刷新重复触发） */
+    consumeBridgeParams() {
+        const B = this.bridge;
+        if (!B) return null;
+        const repo = B.param('repo');
+        B.cleanParams();
+        return repo;
+    }
+
     async bootConfig() {
         const r = await this.config.ensureRepo();
         if (!r.ok) {
