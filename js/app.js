@@ -17,6 +17,11 @@ import { ContextMenu } from './context-menu.js';
 const LS_TOKEN = 'cangshu.token';
 const LS_USER = 'cangshu.user';
 const LS_CONFIG_FALLBACK = 'cangshu.config.fallback';
+// 多账号：账号清单与"当前是哪个"。
+// LS_TOKEN / LS_USER 仍然表示**当前账号**，保留不动 ——
+// Bridge 依赖它们判断登录状态，Drive 也读这两个 key，不能改。
+const LS_ACCOUNTS = 'cangshu.accounts';
+const LS_CURRENT = 'cangshu.current';
 
 export class App {
     constructor() {
@@ -72,6 +77,18 @@ export class App {
             if (e.key === 'Enter') this.login();
         });
         document.getElementById('logout-btn')?.addEventListener('click', () => this.logout());
+        // 点头像 → 切换账号 / 退出
+        document.querySelector('.user')?.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const r = e.currentTarget.getBoundingClientRect();
+            this.showAccountMenu(r.left, r.bottom + 4);
+        });
+        // 右键头像也能出菜单（与 Drive 的习惯一致）
+        document.querySelector('.user')?.addEventListener('contextmenu', (e) => {
+            e.preventDefault();
+            this.showAccountMenu(e.clientX, e.clientY);
+        });
         document.getElementById('refresh-btn')?.addEventListener('click', () => this.loadAll(true));
         document.getElementById('new-repo-btn')?.addEventListener('click', () => this.showNewRepo());
         document.getElementById('add-repo-btn')?.addEventListener('click', () => this.showAddRepo());
@@ -83,23 +100,9 @@ export class App {
             this.renderGrid();
         });
 
-        // 已保存账号：直接点即可登录
-        const saved = localStorage.getItem(LS_USER);
-        const savedToken = localStorage.getItem(LS_TOKEN);
-        if (saved && savedToken) {
-            try {
-                const u = JSON.parse(saved);
-                this.dom.savedBox.style.display = '';
-                this.dom.savedList.innerHTML = `
-                    <button class="saved-acc" id="quick-login">
-                        <img src="${u.avatar_url}" alt="">
-                        <span>@${esc(u.login)}</span>
-                        <em>点击登录</em>
-                    </button>`;
-                this.dom.savedList.querySelector('#quick-login')
-                    ?.addEventListener('click', () => this.login(savedToken));
-            } catch { /* 忽略损坏的缓存 */ }
-        }
+        // 已保存账号：可能有多个，逐个渲染成卡片
+        this.migrateLegacyAccount();
+        this.renderSavedAccounts();
 
         // 主界面空白处右键 → 全局菜单
         document.getElementById('main-screen')?.addEventListener('contextmenu', (e) => {
@@ -130,14 +133,15 @@ export class App {
 
         if (!r.ok) return this.loginError(r.message);
 
+        const user = {
+            login: r.data.login, avatar_url: r.data.avatar_url, name: r.data.name
+        };
         localStorage.setItem(LS_TOKEN, token);
-        localStorage.setItem(LS_USER, JSON.stringify({
-            login: r.data.login, avatar_url: r.data.avatar_url, name: r.data.name
-        }));
+        localStorage.setItem(LS_USER, JSON.stringify(user));
+        // 登记进账号清单（同一账号重复登录只更新令牌，不产生重复条目）
+        this.addAccount(token, user);
         // 同步给 GitHub Drive，让对面也是已登录状态
-        this.saveTokenToBridge(token, {
-            login: r.data.login, avatar_url: r.data.avatar_url, name: r.data.name
-        });
+        this.saveTokenToBridge(token, user);
 
         this.api = api;
         this.state.user = r.data;
@@ -165,9 +169,176 @@ export class App {
     }
 
     logout() {
+        // 只结束当前会话，账号清单保留 ——
+        // 回到登录页还能看到已保存的账号，点一下就回来。
+        // 想彻底删掉某个账号，用登录页卡片上的 ×。
         localStorage.removeItem(LS_TOKEN);
         localStorage.removeItem(LS_USER);
+        localStorage.removeItem(LS_CURRENT);
         location.reload();
+    }
+
+    // ================= 多账号 =================
+
+    getAccounts() {
+        try {
+            const raw = localStorage.getItem(LS_ACCOUNTS);
+            const list = raw ? JSON.parse(raw) : [];
+            return Array.isArray(list) ? list : [];
+        } catch { return []; }
+    }
+
+    saveAccounts(list) {
+        try { localStorage.setItem(LS_ACCOUNTS, JSON.stringify(list)); } catch {}
+    }
+
+    /**
+     * 登录成功后登记账号
+     * 同一个账号重复登录时只更新令牌和头像，不产生重复条目
+     */
+    addAccount(token, user) {
+        const list = this.getAccounts();
+        const id = user.login;
+        const now = new Date().toISOString();
+        const hit = list.find(a => a.id === id);
+        if (hit) {
+            hit.token = token;
+            hit.user = user;
+            hit.lastUsed = now;
+        } else {
+            list.push({ id, token, user, addedAt: now, lastUsed: now });
+        }
+        this.saveAccounts(list);
+        localStorage.setItem(LS_CURRENT, id);
+        return id;
+    }
+
+    removeAccount(id) {
+        const list = this.getAccounts().filter(a => a.id !== id);
+        this.saveAccounts(list);
+        // 删的正是当前账号 → 立即结束会话
+        if (localStorage.getItem(LS_CURRENT) === id) {
+            localStorage.removeItem(LS_TOKEN);
+            localStorage.removeItem(LS_USER);
+            localStorage.removeItem(LS_CURRENT);
+        }
+    }
+
+    /**
+     * 切换账号：写入"当前账号"，并同步给 GitHub Drive
+     *
+     * 同步这一步是联动的关键 —— 否则仓鼠切到 B 之后，
+     * 从仓鼠跳去 Drive 时 Drive 还是 A，两个应用状态打架。
+     */
+    switchAccount(id) {
+        const acc = this.getAccounts().find(a => a.id === id);
+        if (!acc) return false;
+        localStorage.setItem(LS_TOKEN, acc.token);
+        localStorage.setItem(LS_USER, JSON.stringify(acc.user));
+        localStorage.setItem(LS_CURRENT, id);
+        acc.lastUsed = new Date().toISOString();
+        this.saveAccounts(this.getAccounts().map(a => a.id === id ? acc : a));
+        this.saveTokenToBridge(acc.token, acc.user);
+        return true;
+    }
+
+    /**
+     * 老用户升级：之前只存了一对 token/user，没有账号清单
+     * 启动时把现有的补进清单，避免升级后"账号不见了"
+     */
+    migrateLegacyAccount() {
+        if (this.getAccounts().length) return;
+        const token = localStorage.getItem(LS_TOKEN);
+        const raw = localStorage.getItem(LS_USER);
+        if (!token || !raw) return;
+        try {
+            const u = JSON.parse(raw);
+            if (u && u.login) this.addAccount(token, u);
+        } catch { /* 缓存损坏就跳过 */ }
+    }
+
+    /**
+     * 渲染登录页的已保存账号列表
+     *
+     * 每个账号一行：点头像区直接登录，点 × 从本机移除。
+     * 移除只删本机保存的令牌，不动 GitHub 上的任何东西。
+     */
+    renderSavedAccounts() {
+        const list = this.getAccounts();
+        const box = this.dom.savedBox;
+        if (!box) return;
+        if (!list.length) { box.style.display = 'none'; return; }
+
+        const cur = localStorage.getItem(LS_CURRENT);
+        box.style.display = '';
+        const title = box.querySelector('.saved-title');
+        if (title) title.textContent = `已保存的账号（${list.length}）`;
+
+        this.dom.savedList.innerHTML = list.map(a => {
+            const u = a.user || {};
+            const isCur = a.id === cur;
+            return `
+                <div class="saved-acc${isCur ? ' is-current' : ''}" data-id="${esc(a.id)}">
+                    <img src="${esc(u.avatar_url || '')}" alt="">
+                    <span class="acc-name">@${esc(u.login || a.id)}</span>
+                    ${isCur ? '<em>当前</em>' : '<em>点击登录</em>'}
+                    <button class="acc-del" data-del="${esc(a.id)}" title="从本机移除">×</button>
+                </div>`;
+        }).join('');
+
+        // 点击卡片 → 用该账号登录
+        this.dom.savedList.querySelectorAll('.saved-acc').forEach(el => {
+            el.addEventListener('click', () => {
+                const acc = this.getAccounts().find(a => a.id === el.dataset.id);
+                if (acc) this.login(acc.token);
+            });
+        });
+
+        // 点 × → 移除（阻止冒泡，否则会先触发登录）
+        this.dom.savedList.querySelectorAll('.acc-del').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const id = btn.dataset.del;
+                const acc = this.getAccounts().find(a => a.id === id);
+                const name = acc ? (acc.user?.login || id) : id;
+                if (!confirm(`把 @${name} 从本机移除？\n\n只删除本机保存的令牌，GitHub 上的账号和仓库不受影响。`)) return;
+                this.removeAccount(id);
+                this.renderSavedAccounts();
+            });
+        });
+    }
+
+    /**
+     * 顶栏用户区菜单：切换账号 / 退出
+     *
+     * 配置仓库是账号私有的，换账号等于换一整套仓库，
+     * 所以切换后必须重载 —— 不能只换 api 实例。
+     */
+    showAccountMenu(x, y) {
+        const list = this.getAccounts();
+        const cur = localStorage.getItem(LS_CURRENT);
+        const items = [];
+
+        const others = list.filter(a => a.id !== cur);
+        if (others.length) {
+            items.push({ icon: '🔄', label: '切换账号', onClick: () => {}, disabled: true });
+            others.forEach(a => items.push({
+                icon: '👤',
+                label: `@${a.user?.login || a.id}`,
+                onClick: () => {
+                    if (this.switchAccount(a.id)) location.reload();
+                }
+            }));
+            items.push({ sep: true });
+        }
+
+        items.push({
+            icon: '⎋',
+            label: '退出登录',
+            onClick: () => this.logout()
+        });
+
+        this.ctx.show(x, y, items);
     }
 
     /** 准备配置仓库（不存在就建） */
