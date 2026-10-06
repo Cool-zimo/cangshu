@@ -23,7 +23,8 @@ export class GitHubAPI {
                 'Authorization': `Bearer ${this.token}`,
                 'Accept': 'application/vnd.github+json',
                 'User-Agent': 'cangshu-app'
-            }
+            },
+            cache: 'no-store'   // 仓库列表/Pages 状态随时变，不能被缓存
         };
         if (body) {
             opts.headers['Content-Type'] = 'application/json';
